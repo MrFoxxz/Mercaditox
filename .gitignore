@@ -1,0 +1,15 @@
+node_modules/
+.expo/
+.cxx/
+dist/
+android/
+ios/
+*.tsbuildinfo
+npm-debug.log*
+.env
+.env.*
+*.jks
+*.keystore
+google-services.json
+GoogleService-Info.plist
+

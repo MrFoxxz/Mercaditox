@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Mercaditox",
+    "slug": "mercaditox",
+    "scheme": "mercaditox",
+    "version": "0.2.7",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#151210",
+    "icon": "./assets/icon.png",
+    "android": {
+      "package": "com.mercaditox.app",
+      "versionCode": 9,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#271B15"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sharing",
+      "./plugins/with-android-object-path.cjs",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/mercaditoxLogo.png",
+          "imageWidth": 152,
+          "resizeMode": "contain",
+          "backgroundColor": "#151210"
+        }
+      ]
+    ]
+  }
+}
+

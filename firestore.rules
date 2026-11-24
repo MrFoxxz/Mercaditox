@@ -1,0 +1,140 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signed() { return request.auth != null; }
+    function list(id) { return /databases/$(db)/documents/lists/$(id); }
+    function member(id, uid) { return /databases/$(db)/documents/lists/$(id)/members/$(uid); }
+    function invitation(code) { return /databases/$(db)/documents/invites/$(code); }
+    function owner(id) { return signed() && get(list(id)).data.owner == request.auth.uid; }
+    function ownerAfter(id) {
+      let data = getAfter(list(id)).data;
+      return signed() && data.owner == request.auth.uid && !data.get('deleted', false);
+    }
+    function active(id) { return !get(list(id)).data.get('deleted', false); }
+    function deletingOwner(id) { return owner(id) && get(list(id)).data.get('deleted', false); }
+    function allowed(id) { return signed() && active(id) && (exists(member(id, request.auth.uid)) || owner(id)); }
+    function text(value, max) { return value is string && value.size() <= max; }
+    function memberName(value) { return text(value, 40) && value.size() > 0; }
+    function price(value) { return value == null || (value is number && value >= 0 && value <= 999999999.99); }
+    function total(value) { return value == null || (value is number && value >= 0 && value <= 9007199254740991); }
+    function validShopPrice(options, index) {
+      return options.size() <= index || (options[index] is map
+        && options[index].keys().hasOnly(['store', 'amount'])
+        && text(options[index].store, 60) && options[index].store.size() > 0
+        && options[index].amount is number && price(options[index].amount));
+    }
+    function validPriceOptions(data) {
+      let options = data.get('prices', []);
+      let selected = data.get('selectedPrice', null);
+      return options is list && options.size() <= 6
+        && (selected == null || (selected is int && selected >= 0 && selected < options.size()))
+        && validShopPrice(options, 0) && validShopPrice(options, 1) && validShopPrice(options, 2)
+        && validShopPrice(options, 3) && validShopPrice(options, 4) && validShopPrice(options, 5);
+    }
+    function validItem() {
+      let data = request.resource.data;
+      return data.keys().hasOnly(['name', 'category', 'unit', 'quantity', 'checked', 'asleep', 'note', 'estimated', 'paid', 'prices', 'selectedPrice', 'createdAt'])
+        && text(data.name, 80) && data.name.size() > 0
+        && data.category in ['verduras', 'frutas', 'proteinas', 'lacteos', 'despensa', 'panaderia', 'bebidas', 'higiene', 'aseo', 'hogar', 'ferreteria', 'otros']
+        && data.unit in ['un', 'kg', 'g', 'L', 'ml', 'paquete', 'manojo']
+        && data.quantity is number && data.quantity > 0 && data.quantity <= 10000
+        && data.checked is bool && data.get('asleep', false) is bool
+        && (!data.get('asleep', false) || !data.checked)
+        && text(data.note, 240) && price(data.estimated) && price(data.paid) && validPriceOptions(data)
+        && data.createdAt is int && data.createdAt > 0;
+    }
+    function validGrant(listId, code) {
+      let before = get(invitation(code)).data;
+      return active(listId) && before.listId == listId && before.usedBy == null
+        && before.expiresAt > request.time.toMillis()
+        && getAfter(invitation(code)).data.usedBy == request.auth.uid;
+    }
+
+    match /lists/{listId} {
+      allow get: if signed() && (resource == null || resource.data.get('deleted', false) || allowed(listId));
+      allow create: if signed() && request.resource.data.keys().hasOnly(['owner', 'name', 'ownerName'])
+        && request.resource.data.owner == request.auth.uid && text(request.resource.data.name, 60)
+        && request.resource.data.name.size() > 0
+        && (!('ownerName' in request.resource.data) || memberName(request.resource.data.ownerName));
+      allow update: if owner(listId) && active(listId) && (
+        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerName'])
+          && memberName(request.resource.data.ownerName))
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+          && text(request.resource.data.name, 60) && request.resource.data.name.size() > 0)
+        || (request.resource.data.keys().hasOnly(['owner', 'deleted'])
+          && request.resource.data.owner == request.auth.uid && request.resource.data.deleted == true)
+        || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['round'])
+          && request.resource.data.round is int && request.resource.data.round == resource.data.get('round', 0) + 1)
+      );
+      allow delete: if deletingOwner(listId);
+
+      match /members/{uid} {
+        allow get: if signed() && (request.auth.uid == uid || allowed(listId));
+        allow list: if allowed(listId) || deletingOwner(listId);
+        allow create: if signed() && request.auth.uid == uid
+          && request.resource.data.keys().hasOnly(['invite', 'displayName'])
+          && (!('displayName' in request.resource.data) || memberName(request.resource.data.displayName))
+          && request.resource.data.invite is string
+          && request.resource.data.invite.matches('^[a-f0-9]{48}$')
+          && validGrant(listId, request.resource.data.invite);
+        allow update: if signed() && request.auth.uid == uid && allowed(listId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+          && memberName(request.resource.data.displayName);
+        allow delete: if deletingOwner(listId);
+      }
+
+      match /items/{itemId} {
+        allow read: if allowed(listId) || deletingOwner(listId);
+        allow create: if (ownerAfter(listId) || allowed(listId)) && validItem();
+        allow update: if allowed(listId) && validItem()
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if allowed(listId) || deletingOwner(listId);
+      }
+
+      match /history/{closureId} {
+        allow read: if allowed(listId) || deletingOwner(listId);
+        allow delete: if deletingOwner(listId);
+        allow create: if owner(listId) && active(listId)
+          && closureId.matches('^[0-9]{1,10}$')
+          && request.resource.data.keys().hasOnly(['estimated', 'paid', 'createdAt', 'note'])
+          && total(request.resource.data.estimated) && total(request.resource.data.paid)
+          && text(request.resource.data.note, 160)
+          && request.resource.data.createdAt is int && request.resource.data.createdAt > 0
+          && getAfter(list(listId)).data.round == get(list(listId)).data.get('round', 0) + 1;
+      }
+    }
+
+    match /catalog/default {
+      allow get: if signed();
+    }
+    match /catalog/v2 {
+      allow get: if signed();
+    }
+
+    match /users/{uid} {
+      allow get: if signed() && request.auth.uid == uid;
+      allow create, update: if signed() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['displayName'])
+        && memberName(request.resource.data.displayName);
+    }
+
+    match /invites/{code} {
+      allow get: if signed();
+      allow list: if signed() && resource.data.owner == request.auth.uid;
+      allow create: if signed() && code.matches('^[a-f0-9]{48}$')
+        && request.resource.data.keys().hasOnly(['listId', 'owner', 'expiresAt', 'usedBy'])
+        && request.resource.data.listId is string && request.resource.data.listId.matches('^[A-Za-z0-9]{20}$')
+        && request.resource.data.owner == request.auth.uid && ownerAfter(request.resource.data.listId)
+        && request.resource.data.usedBy == null && request.resource.data.expiresAt is int
+        && request.resource.data.expiresAt > request.time.toMillis()
+        && request.resource.data.expiresAt <= request.time.toMillis() + 90000000;
+      allow update: if signed() && resource.data.usedBy == null
+        && resource.data.expiresAt > request.time.toMillis()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedBy'])
+        && request.resource.data.usedBy == request.auth.uid
+        && !exists(member(resource.data.listId, request.auth.uid))
+        && getAfter(member(resource.data.listId, request.auth.uid)).data.invite == code;
+      allow delete: if signed() && resource.data.owner == request.auth.uid && owner(resource.data.listId);
+    }
+  }
+}
